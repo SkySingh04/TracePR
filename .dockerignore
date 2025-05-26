@@ -1,0 +1,79 @@
+# Git
+.git
+.gitignore
+
+# Environment files
+.env
+.env.*
+env.template
+
+# Build artifacts
+tracepr
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test files
+*_test.go
+test/
+tests/
+
+# Documentation
+README.md
+*.md
+docs/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+.tmp
+
+# Node modules (if any)
+node_modules/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Coverage reports
+*.cover
+.coverage
+.coverage.*
+coverage.xml
+*.coverprofile
+
+# Kubernetes files
+k8s/
+kubernetes/
+*.yaml
+*.yml
+
+# CI/CD files
+.github/
+Jenkinsfile
+jenkins/
+
+# Docker files
+Dockerfile*
+docker-compose* 

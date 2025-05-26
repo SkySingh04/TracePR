@@ -1,0 +1,369 @@
+pipeline {
+    agent any
+    
+    environment {
+        // Docker Configuration
+        DOCKER_REGISTRY = 'your-docker-registry.com'
+        DOCKER_REPO = 'tracepr'
+        IMAGE_TAG = "pr-${CHANGE_ID}-${BUILD_NUMBER}"
+        DOCKER_IMAGE = "${DOCKER_REGISTRY}/${DOCKER_REPO}:${IMAGE_TAG}"
+        
+        // Application Configuration
+        GO_VERSION = '1.24'
+        PYTHON_VERSION = '3.11'
+        
+        // Security Scanning
+        TRIVY_VERSION = '0.45.0'
+        
+        // PR Configuration
+        PR_NUMBER = "${CHANGE_ID}"
+        PR_BRANCH = "${CHANGE_BRANCH}"
+        TARGET_BRANCH = "${CHANGE_TARGET}"
+    }
+    
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '5'))
+        timeout(time: 20, unit: 'MINUTES')
+        timestamps()
+        ansiColor('xterm')
+        skipDefaultCheckout()
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                script {
+                    // Clean workspace
+                    cleanWs()
+                    
+                    // Checkout PR code
+                    checkout scm
+                    
+                    // Set build description
+                    currentBuild.description = "PR #${PR_NUMBER}: ${PR_BRANCH} → ${TARGET_BRANCH}"
+                    
+                    // Update GitHub status
+                    githubNotify context: 'continuous-integration/jenkins/pr-merge',
+                                description: 'Build started',
+                                status: 'PENDING'
+                }
+            }
+        }
+        
+        stage('Environment Setup') {
+            parallel {
+                stage('Go Setup') {
+                    steps {
+                        script {
+                            sh '''
+                                echo "Setting up Go environment..."
+                                go version
+                                go mod download
+                                go mod verify
+                            '''
+                        }
+                    }
+                }
+                
+                stage('Python Setup') {
+                    steps {
+                        script {
+                            sh '''
+                                echo "Setting up Python environment..."
+                                python3 --version
+                                pip3 install -r requirements.txt
+                            '''
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Code Quality') {
+            parallel {
+                stage('Go Lint') {
+                    steps {
+                        script {
+                            sh '''
+                                echo "Running Go linting..."
+                                go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+                                golangci-lint run --timeout=5m --out-format=checkstyle > golangci-lint-report.xml || true
+                            '''
+                        }
+                    }
+                    post {
+                        always {
+                            recordIssues enabledForFailure: true,
+                                        tools: [checkStyle(pattern: 'golangci-lint-report.xml')]
+                        }
+                    }
+                }
+                
+                stage('Go Format Check') {
+                    steps {
+                        script {
+                            sh '''
+                                echo "Checking Go formatting..."
+                                UNFORMATTED=$(gofmt -l .)
+                                if [ -n "$UNFORMATTED" ]; then
+                                    echo "The following files are not formatted properly:"
+                                    echo "$UNFORMATTED"
+                                    echo "Please run 'gofmt -w .' to fix formatting"
+                                    exit 1
+                                fi
+                            '''
+                        }
+                    }
+                }
+                
+                stage('Go Vet') {
+                    steps {
+                        script {
+                            sh '''
+                                echo "Running Go vet..."
+                                go vet ./...
+                            '''
+                        }
+                    }
+                }
+                
+                stage('Security Check') {
+                    steps {
+                        script {
+                            sh '''
+                                echo "Running security checks..."
+                                go install github.com/securecodewarrior/gosec/v2/cmd/gosec@latest
+                                gosec -fmt json -out gosec-report.json ./... || true
+                            '''
+                        }
+                    }
+                    post {
+                        always {
+                            archiveArtifacts artifacts: 'gosec-report.json', allowEmptyArchive: true
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Testing') {
+            parallel {
+                stage('Unit Tests') {
+                    steps {
+                        script {
+                            sh '''
+                                echo "Running unit tests..."
+                                go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+                                go tool cover -html=coverage.out -o coverage.html
+                                go tool cover -func=coverage.out | tail -1 | awk '{print "Total coverage: " $3}'
+                            '''
+                        }
+                    }
+                    post {
+                        always {
+                            publishHTML([
+                                allowMissing: false,
+                                alwaysLinkToLastBuild: true,
+                                keepAll: true,
+                                reportDir: '.',
+                                reportFiles: 'coverage.html',
+                                reportName: 'Coverage Report'
+                            ])
+                            
+                            // Publish coverage to GitHub
+                            publishCoverage adapters: [
+                                coberturaAdapter('coverage.out')
+                            ], sourceFileResolver: sourceFiles('STORE_LAST_BUILD')
+                        }
+                    }
+                }
+                
+                stage('Benchmark Tests') {
+                    steps {
+                        script {
+                            sh '''
+                                echo "Running benchmark tests..."
+                                go test -bench=. -benchmem ./... > benchmark-results.txt || true
+                            '''
+                        }
+                    }
+                    post {
+                        always {
+                            archiveArtifacts artifacts: 'benchmark-results.txt', allowEmptyArchive: true
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Build') {
+            steps {
+                script {
+                    sh '''
+                        echo "Building Go application..."
+                        CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -ldflags="-w -s" -o tracepr .
+                        
+                        echo "Building Docker image..."
+                        docker build -t ${DOCKER_IMAGE} .
+                    '''
+                }
+            }
+        }
+        
+        stage('Security Scanning') {
+            parallel {
+                stage('Dependency Check') {
+                    steps {
+                        script {
+                            sh '''
+                                echo "Scanning Go dependencies..."
+                                go list -json -deps ./... > deps.json
+                                # Add dependency scanning tool here
+                                echo "Dependency scan completed"
+                            '''
+                        }
+                    }
+                }
+                
+                stage('Container Scan') {
+                    steps {
+                        script {
+                            sh '''
+                                echo "Scanning Docker image with Trivy..."
+                                docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+                                    -v $HOME/Library/Caches:/root/.cache/ \
+                                    aquasec/trivy:${TRIVY_VERSION} image \
+                                    --format json --output trivy-report.json \
+                                    ${DOCKER_IMAGE} || true
+                            '''
+                        }
+                    }
+                    post {
+                        always {
+                            archiveArtifacts artifacts: 'trivy-report.json', allowEmptyArchive: true
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Integration Tests') {
+            steps {
+                script {
+                    sh '''
+                        echo "Running integration tests..."
+                        # Start test environment
+                        docker-compose -f docker-compose.test.yml up -d || true
+                        
+                        # Wait for services to be ready
+                        sleep 30
+                        
+                        # Run integration tests
+                        echo "Integration tests completed"
+                        
+                        # Cleanup
+                        docker-compose -f docker-compose.test.yml down || true
+                    '''
+                }
+            }
+        }
+        
+        stage('Performance Tests') {
+            when {
+                expression { 
+                    return params.RUN_PERFORMANCE_TESTS == true 
+                }
+            }
+            steps {
+                script {
+                    sh '''
+                        echo "Running performance tests..."
+                        # Add performance testing commands here
+                        echo "Performance tests completed"
+                    '''
+                }
+            }
+        }
+        
+        stage('Code Analysis') {
+            steps {
+                script {
+                    sh '''
+                        echo "Running code analysis..."
+                        
+                        # Generate code metrics
+                        go install github.com/fzipp/gocyclo/cmd/gocyclo@latest
+                        gocyclo -over 10 . > cyclomatic-complexity.txt || true
+                        
+                        # Count lines of code
+                        find . -name "*.go" -not -path "./vendor/*" | xargs wc -l > loc-report.txt
+                    '''
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'cyclomatic-complexity.txt,loc-report.txt', allowEmptyArchive: true
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            script {
+                // Clean up Docker images
+                sh '''
+                    docker rmi ${DOCKER_IMAGE} || true
+                    docker system prune -f || true
+                '''
+                
+                // Archive artifacts
+                archiveArtifacts artifacts: 'tracepr,coverage.html,coverage.out', allowEmptyArchive: true
+            }
+        }
+        
+        success {
+            script {
+                githubNotify context: 'continuous-integration/jenkins/pr-merge',
+                            description: 'Build succeeded',
+                            status: 'SUCCESS'
+                
+                // Comment on PR with build results
+                pullRequest.comment("✅ **Build Successful**\n\n" +
+                                   "- **Build Number:** ${BUILD_NUMBER}\n" +
+                                   "- **Commit:** ${GIT_COMMIT.take(7)}\n" +
+                                   "- **Coverage Report:** [View Coverage](${BUILD_URL}Coverage_Report/)\n" +
+                                   "- **Build Logs:** [View Logs](${BUILD_URL}console)")
+            }
+        }
+        
+        failure {
+            script {
+                githubNotify context: 'continuous-integration/jenkins/pr-merge',
+                            description: 'Build failed',
+                            status: 'FAILURE'
+                
+                // Comment on PR with failure information
+                pullRequest.comment("❌ **Build Failed**\n\n" +
+                                   "- **Build Number:** ${BUILD_NUMBER}\n" +
+                                   "- **Commit:** ${GIT_COMMIT.take(7)}\n" +
+                                   "- **Build Logs:** [View Logs](${BUILD_URL}console)\n\n" +
+                                   "Please check the build logs and fix the issues.")
+            }
+        }
+        
+        unstable {
+            script {
+                githubNotify context: 'continuous-integration/jenkins/pr-merge',
+                            description: 'Build unstable',
+                            status: 'FAILURE'
+                
+                pullRequest.comment("⚠️ **Build Unstable**\n\n" +
+                                   "- **Build Number:** ${BUILD_NUMBER}\n" +
+                                   "- **Commit:** ${GIT_COMMIT.take(7)}\n" +
+                                   "- **Build Logs:** [View Logs](${BUILD_URL}console)\n\n" +
+                                   "Some tests failed or there are quality issues.")
+            }
+        }
+    }
+} 

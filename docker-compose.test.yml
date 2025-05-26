@@ -1,0 +1,106 @@
+version: '3.8'
+
+services:
+  tracepr:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - ENVIRONMENT=test
+      - LOG_LEVEL=debug
+      - PORT=8080
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-test_token}
+      - CLAUDE_API_KEY=${CLAUDE_API_KEY:-test_key}
+    ports:
+      - "8080:8080"
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - tracepr-test
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    networks:
+      - tracepr-test
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: tracepr_test
+      POSTGRES_USER: tracepr
+      POSTGRES_PASSWORD: test_password
+    ports:
+      - "5432:5432"
+    networks:
+      - tracepr-test
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tracepr -d tracepr_test"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./alerts/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./alerts/prometheus/rules:/etc/prometheus/rules
+    networks:
+      - tracepr-test
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    networks:
+      - tracepr-test
+    volumes:
+      - grafana-storage:/var/lib/grafana
+
+  test-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    environment:
+      - TRACEPR_URL=http://tracepr:8080
+      - REDIS_URL=redis://redis:6379
+      - POSTGRES_URL=postgres://tracepr:test_password@postgres:5432/tracepr_test
+    depends_on:
+      - tracepr
+      - redis
+      - postgres
+    networks:
+      - tracepr-test
+    volumes:
+      - ./tests:/tests
+    command: ["./run-integration-tests.sh"]
+
+networks:
+  tracepr-test:
+    driver: bridge
+
+volumes:
+  grafana-storage: 

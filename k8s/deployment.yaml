@@ -1,0 +1,193 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tracepr
+  namespace: tracepr
+  labels:
+    app: tracepr
+    version: v1.0.0
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: tracepr
+  template:
+    metadata:
+      labels:
+        app: tracepr
+        version: v1.0.0
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: tracepr
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+      containers:
+      - name: tracepr
+        image: tracepr:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        env:
+        # Configuration from ConfigMap
+        - name: PRD_FILE
+          valueFrom:
+            configMapKeyRef:
+              name: tracepr-config
+              key: PRD_FILE
+        - name: OUTPUT_FORMAT
+          valueFrom:
+            configMapKeyRef:
+              name: tracepr-config
+              key: OUTPUT_FORMAT
+        - name: MAX_DIFF_SIZE
+          valueFrom:
+            configMapKeyRef:
+              name: tracepr-config
+              key: MAX_DIFF_SIZE
+        - name: PORT
+          valueFrom:
+            configMapKeyRef:
+              name: tracepr-config
+              key: PORT
+        - name: MAX_COMMENTS
+          valueFrom:
+            configMapKeyRef:
+              name: tracepr-config
+              key: MAX_COMMENTS
+        - name: CLAUDE_MODEL
+          valueFrom:
+            configMapKeyRef:
+              name: tracepr-config
+              key: CLAUDE_MODEL
+        - name: CLAUDE_BASE_URL
+          valueFrom:
+            configMapKeyRef:
+              name: tracepr-config
+              key: CLAUDE_BASE_URL
+        - name: PROMETHEUS_ALERTMANAGER_URL
+          valueFrom:
+            configMapKeyRef:
+              name: tracepr-config
+              key: PROMETHEUS_ALERTMANAGER_URL
+        - name: PROMETHEUS_CONFIG_PATH
+          valueFrom:
+            configMapKeyRef:
+              name: tracepr-config
+              key: PROMETHEUS_CONFIG_PATH
+        - name: AMPLITUDE_URL
+          valueFrom:
+            configMapKeyRef:
+              name: tracepr-config
+              key: AMPLITUDE_URL
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: tracepr-config
+              key: LOG_LEVEL
+        - name: LOG_FORMAT
+          valueFrom:
+            configMapKeyRef:
+              name: tracepr-config
+              key: LOG_FORMAT
+        - name: ENVIRONMENT
+          valueFrom:
+            configMapKeyRef:
+              name: tracepr-config
+              key: ENVIRONMENT
+        # Secrets
+        - name: GITHUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: tracepr-secrets
+              key: GITHUB_TOKEN
+        - name: CLAUDE_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: tracepr-secrets
+              key: CLAUDE_API_KEY
+        - name: GRAFANA_SERVICE_ACCOUNT_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: tracepr-secrets
+              key: GRAFANA_SERVICE_ACCOUNT_TOKEN
+        - name: GRAFANA_URL
+          valueFrom:
+            secretKeyRef:
+              name: tracepr-secrets
+              key: GRAFANA_URL
+        - name: AMPLITUDE_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: tracepr-secrets
+              key: AMPLITUDE_API_KEY
+        - name: AMPLITUDE_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: tracepr-secrets
+              key: AMPLITUDE_SECRET_KEY
+        - name: AMPLITUDE_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: tracepr-secrets
+              key: AMPLITUDE_API_TOKEN
+        - name: DATADOG_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: tracepr-secrets
+              key: DATADOG_API_KEY
+        - name: DATADOG_APP_KEY
+          valueFrom:
+            secretKeyRef:
+              name: tracepr-secrets
+              key: DATADOG_APP_KEY
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        volumeMounts:
+        - name: config-volume
+          mountPath: /app/config
+          readOnly: true
+        - name: alerts-volume
+          mountPath: /app/alerts
+          readOnly: true
+      volumes:
+      - name: config-volume
+        configMap:
+          name: tracepr-config
+      - name: alerts-volume
+        emptyDir: {}
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 30 

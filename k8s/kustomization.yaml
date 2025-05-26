@@ -1,0 +1,48 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+metadata:
+  name: tracepr
+  namespace: tracepr
+
+resources:
+- namespace.yaml
+- serviceaccount.yaml
+- configmap.yaml
+- secret.yaml
+- deployment.yaml
+- service.yaml
+- ingress.yaml
+- hpa.yaml
+- networkpolicy.yaml
+
+commonLabels:
+  app: tracepr
+  managed-by: kustomize
+
+images:
+- name: tracepr
+  newTag: latest
+
+replicas:
+- name: tracepr
+  count: 3
+
+patchesStrategicMerge:
+- |-
+  apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    name: tracepr
+    namespace: tracepr
+  spec:
+    template:
+      metadata:
+        annotations:
+          config/checksum: ${CONFIG_CHECKSUM}
+
+configMapGenerator:
+- name: tracepr-env-config
+  literals:
+  - DEPLOYMENT_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  - VERSION=v1.0.0 
